@@ -24,9 +24,9 @@ plugin = defaultPlugin{installCoreToDos = installPlugin}
     installPlugin _ todos = do
       liftIO $ putStrLn "installing the plugin"
       pprTrace "TODOs:" (ppr todos) (return ())
-      return [CoreDoPluginPass "Implementing functions" implementFuns]
+      -- return [CoreDoPluginPass "Implementing functions" implementFuns]
       -- Doesn't work:
-      -- return (CoreDoPluginPass "Implementing functions" implementFuns : todos)
+      return (CoreDoPluginPass "Implementing functions" implementFuns : todos)
       -- Doesn't work:
       -- return (todos ++ [CoreDoPluginPass "Implementing functions" implementFuns])
 
@@ -89,7 +89,8 @@ implementAddOne rdrEnv (NonRec bndr _)
        int1Binder <- newLocalId "int1" intTy
        return $ NonRec bndr (Lam arg (Let (NonRec int1Binder int1)
                                           (mkApps (Var plusId)
-                                                  [Var (instanceDFunId intNumInst)
+                                                  [Type intTy
+                                                  ,Var (instanceDFunId intNumInst)
                                                   ,Var int1Binder
                                                   ,Var arg])))
 
@@ -115,42 +116,49 @@ implementFac rdrEnv (NonRec bndr _)
 
        -------------------------------------------------------------------------
 
-       scrtBinder1 <- newLocalId "scrt1" intTy
-       scrtBinder2 <- newLocalId "scrt2" intTy
+       -- binder for first case expression on Int
+       scrt1Binder <- newLocalId "scrt1" intTy
+       -- binder for second case expression on Int's argument
+       scrt2Binder <- newLocalId "scrt2" intPrimTy
+       -- these are not used, just to put something in Case's second argument
 
        dflags <- getDynFlags
        let int1 = mkIntExprInt dflags 1
 
-       int1Binder <- newLocalId "int1" intTy
-       recCallId  <- newLocalId "rec" intTy
-
        let argMinusOne = mkApps (Var minusId)
-                                [ Var (instanceDFunId intNumInst)
+                                [ Type intTy
+                                , Var (instanceDFunId intNumInst)
                                 , Var arg
-                                , Var int1Binder ]
+                                , int1 ]
 
            recCall     = mkApps (Var bndr) [ argMinusOne ]
 
            argTimesRec =
-             Let (NonRec int1Binder int1) $
-               Let (NonRec recCallId recCall) $
                  mkApps (Var multId)
-                        [ Var (instanceDFunId intNumInst)
+                        [ Type intTy
+                        , Var (instanceDFunId intNumInst)
                         , Var arg
-                        , Var recCallId ]
-
+                        , recCall ]
 
        argInt <- newLocalId "i" intPrimTy
 
        let intLitAlts = [ (DEFAULT, [], argTimesRec)
-                        , (LitAlt (MachInt 0), [], int1)
+                        , (LitAlt (mkMachInt dflags 0), [], int1)
                         ]
-           compareIntLitCase = Case (Var argInt) scrtBinder2 intTy intLitAlts
+
+           -- case i of ...
+           compareIntLitCase = Case (Var argInt) scrt2Binder intTy intLitAlts
+           -- compareIntLitCase = mkWildCase (Var argInt) intPrimTy intTy intLitAlts
+
+           -- I# i -> ...
            compareIntAlt = (DataAlt intDataCon, [argInt], compareIntLitCase)
 
 
        let caseAlts = [ compareIntAlt ]
-           caseExpr = Case (Var arg) scrtBinder1 intTy caseAlts
+
+           -- case arg of ...
+           caseExpr = Case (Var arg) scrt1Binder intTy caseAlts
+           -- caseExpr = mkWildCase (Var arg) intTy intTy caseAlts
 
        return $ Rec [(bndr, Lam arg caseExpr)]
 
