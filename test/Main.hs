@@ -17,4 +17,3 @@ main = do
     forM_ [1..10] $ print . addOne
     forM_ [1..10] $ print . haskellFactorial
     forM_ [1..10] $ print . factorial
-
