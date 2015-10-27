@@ -19,6 +19,7 @@ library
 
   build-depends:
     base >= 4.8 && < 4.9,
+    bytestring,
     ghc  >= 7.10 && < 8
     -- CoreDump >= 0.1.2.0
 
