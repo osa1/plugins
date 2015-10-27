@@ -2,6 +2,18 @@ module Main where
 
 import Control.Monad (forM_)
 
+--------------------------------------------------------------------------------
+-- Even with this piece of code, GHC is simply unable to evaluate this in
+-- compile time.
+
+-- import Prelude hiding (unlines)
+--
+-- unlines :: [String] -> String
+-- unlines [] = []
+-- unlines (l:ls) = l ++ '\n' : unlines ls
+{- # INLINE unlines #-}
+--------------------------------------------------------------------------------
+
 -- We need these undefined definitions because GHC first type checks and then
 -- runs plugins.
 
