@@ -24,11 +24,7 @@ plugin = defaultPlugin{installCoreToDos = installPlugin}
     installPlugin _ todos = do
       liftIO $ putStrLn "installing the plugin"
       pprTrace "TODOs:" (ppr todos) (return ())
-      -- return [CoreDoPluginPass "Implementing functions" implementFuns]
-      -- Doesn't work:
       return (CoreDoPluginPass "Implementing functions" implementFuns : todos)
-      -- Doesn't work:
-      -- return (todos ++ [CoreDoPluginPass "Implementing functions" implementFuns])
 
 implementFuns :: ModGuts -> CoreM ModGuts
 implementFuns guts@ModGuts{ mg_binds = binds, mg_rdr_env = rdrEnv } = do
