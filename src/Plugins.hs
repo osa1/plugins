@@ -1,4 +1,4 @@
-{-# LANGUAGE CPP, LambdaCase, ScopedTypeVariables, TupleSections #-}
+{-# LANGUAGE TupleSections #-}
 
 module Plugins (plugin) where
 
