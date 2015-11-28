@@ -34,10 +34,14 @@ plugin = defaultPlugin{installCoreToDos = installPlugin}
 
 --------------------------------------------------------------------------------
 
+applyActions :: Monad m => [a -> m a] -> a -> m a
+applyActions []         a = return a
+applyActions (ac : acs) a = ac a >>= applyActions acs
+
 implementFuns :: ModGuts -> CoreM ModGuts
 implementFuns guts@ModGuts{ mg_binds = binds, mg_rdr_env = rdrEnv } = do
     liftIO $ putStrLn "Implementing functions..."
-    binds' <- mapM (implementAddOne rdrEnv >=> implementFac rdrEnv) binds
+    binds' <- applyActions [mapM (implementAddOne rdrEnv), mapM (implementFac rdrEnv)] binds
     hscEnv <- getHscEnv
     lint (CoreDoPluginPass "Implementing functions" implementFuns) binds'
     return guts{ mg_binds = binds' }
@@ -95,20 +99,8 @@ implementAddOne rdrEnv (NonRec bndr _)
        dflags <- getDynFlags
        let int1 = mkIntExprInt dflags 1
 
-       -- For some reason this is failing with a panic. The reason might be
-       -- int1, which is not let bound. (I don't understand why that might be a
-       -- problem, but still)
-       -- let app = mkApps (Var plusId) [Var (instanceDFunId intNumInst), int1, Var arg]
-       -- return $ NonRec bndr (Lam arg app)
-
-       -- This is still failing when simplifier runs on this.
-       int1Binder <- newLocalId "int1" intTy
-       return $ NonRec bndr (Lam arg (Let (NonRec int1Binder int1)
-                                          (mkApps (Var plusId)
-                                                  [Type intTy
-                                                  ,Var (instanceDFunId intNumInst)
-                                                  ,Var int1Binder
-                                                  ,Var arg])))
+       return $ NonRec bndr $ Lam arg $
+                  mkApps (Var plusId) [Type intTy, Var (instanceDFunId intNumInst), int1, Var arg]
 
 implementAddOne _ b = return b
 
@@ -141,20 +133,16 @@ implementFac rdrEnv (NonRec bndr _)
        dflags <- getDynFlags
        let int1 = mkIntExprInt dflags 1
 
-       let argMinusOne = mkApps (Var minusId)
-                                [ Type intTy
-                                , Var (instanceDFunId intNumInst)
-                                , Var arg
-                                , int1 ]
+       let argMinusOne =
+             mkApps (Var minusId)
+               [ Type intTy, Var (instanceDFunId intNumInst), Var arg, int1 ]
 
-           recCall     = mkApps (Var bndr) [ argMinusOne ]
+           recCall =
+             mkApps (Var bndr) [ argMinusOne ]
 
            argTimesRec =
-                 mkApps (Var multId)
-                        [ Type intTy
-                        , Var (instanceDFunId intNumInst)
-                        , Var arg
-                        , recCall ]
+             mkApps (Var multId)
+               [ Type intTy, Var (instanceDFunId intNumInst), Var arg, recCall ]
 
        argInt <- newLocalId "i" intPrimTy
 
