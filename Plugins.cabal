@@ -18,7 +18,7 @@ library
   exposed-modules:     Plugins
 
   build-depends:
-    base >= 4.8 && < 4.9,
+    base >= 4.8 && < 4.10,
     bytestring,
     ghc  >= 7.10 && < 8
     -- CoreDump >= 0.1.2.0
