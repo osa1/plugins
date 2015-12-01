@@ -30,6 +30,22 @@ printHelp = putStrLn helpMsg
                        "message that takes",
                        "couple of lines."]
 
+--------------------------------------------------------------------------------
+
+data Either1 a b = Left1 a | Right1 b
+
+instance Functor (Either1 a) where
+  fmap _ (Left1 a)  = Left1 a
+  fmap f (Right1 a) = Right1 (f a)
+
+data Maybe1 a = Nothing1 | Just1 a
+
+instance Functor Maybe1 where
+  fmap _ Nothing1  = Nothing1
+  fmap f (Just1 a) = Just1 (f a)
+
+--------------------------------------------------------------------------------
+
 main :: IO ()
 main = do
     printHelp
