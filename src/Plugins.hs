@@ -283,7 +283,7 @@ rmrExpr (Lam arg body) = Lam arg <$> rmrExpr body
 
 rmrExpr (Let binds body) = Let <$> rmrBinds binds <*> rmrExpr body
 
-rmrExpr (Case scrt bndr ty alts) = do
+rmrExpr e@(Case scrt bndr ty alts) = do
     scrt' <- rmrExpr scrt
 
     used_bndr <- newLocalId "rmr" (idType bndr)
@@ -320,9 +320,11 @@ rmrExpr (Case scrt bndr ty alts) = do
     --
     -- To be explored later.
     --
-    pprTrace "rmrExpr" (ppr ret) (return ret)
+    when updateOccInfo $
+      pprTrace "rmrExpr" (text "before:" <+> ppr e $$
+                          text "after:" <+> ppr ret) (return ())
 
-    -- return $ Case scrt' bndr' ty alts'
+    return ret
 
 rmrExpr (Cast expr c) = Cast <$> rmrExpr expr <*> pure c
 
