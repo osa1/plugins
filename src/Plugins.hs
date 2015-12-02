@@ -4,21 +4,22 @@ module Plugins (plugin) where
 
 --------------------------------------------------------------------------------
 
-import           Class                 (classMethods)
-import           CoreLint              (lintPassResult)
+import           Class                       (classMethods)
+import           CoreLint                    (lintPassResult)
 import           GhcPlugins
-import           InstEnv               (instanceDFunId)
-import           MkId                  (unsafeCoerceId)
+import           InstEnv                     (instanceDFunId)
+import           MkId                        (unsafeCoerceId)
 import           PprCore
-import           PrelNames             (numClassName)
-import           TcEnv                 (tcLookupClass, tcLookupInstance)
-import           TcRnMonad             (initTcForLookup)
-import           TysPrim               (intPrimTy)
+import           PrelNames                   (numClassName)
+import           TcEnv                       (tcLookupClass, tcLookupInstance)
+import           TcRnMonad                   (initTcForLookup)
+import           TysPrim                     (intPrimTy)
 
 import           Control.Monad
+import           Control.Monad.Writer.Strict hiding (pass)
 
-import qualified Data.ByteString       as BS
-import qualified Data.ByteString.Char8 as BSC
+import qualified Data.ByteString             as BS
+import qualified Data.ByteString.Char8       as BSC
 
 --------------------------------------------------------------------------------
 -- Some problems with plugins:
@@ -335,24 +336,51 @@ rmrExpr e@Type{} = return e
 rmrExpr e@Coercion{} = return e
 
 rmrAlt :: Type -> CoreBndr -> Type -> CoreAlt -> CoreM (CoreAlt, Bool)
-rmrAlt lhs_ty lhs_bndr expr_ty alt@(DataAlt lhs_con, bndrs, rhs)
-  | (Var f, args) <- collectArgs rhs
-  , let non_ty_args = dropWhile isTypeArg args
-  , Just rhs_con  <- isDataConWorkId_maybe f
-  , lhs_con == rhs_con
-  , length bndrs == length non_ty_args
-  , collectIds non_ty_args == bndrs
-  = return ((DataAlt lhs_con, bndrs, mkUnsafeCoerce lhs_ty expr_ty (Var lhs_bndr)),
-             True)
+rmrAlt lhs_ty lhs_bndr expr_ty (con, bndrs, rhs)
+  = do -- first do the optimization to sub-expressions
+       rhs' <- rmrExpr rhs
+       -- then do the transformation to current alt
+       case con of
+         DataAlt lhs_con -> do
+           let (rhs'', updateOccInfo) =
+                 runWriter (substCoerceExpr lhs_ty lhs_bndr lhs_con bndrs expr_ty rhs')
+           return ((DataAlt lhs_con, bndrs, rhs''), getAny updateOccInfo)
 
-  | otherwise
-  = return (alt, False)
+         _ -> return ((con, bndrs, rhs'), False)
 
+substCoerceExpr :: Type -> Var -> DataCon -> [Var] -> Type -> CoreExpr -> Writer Any CoreExpr
+substCoerceExpr lhs_ty lhs_bndr con bndrs expr_ty expr = go expr
   where
+    go :: CoreExpr -> Writer Any CoreExpr
+    go e@Var{} = return e
+    go e@Lit{} = return e
+    go e@App{}
+      | let (Var f, args) = collectArgs e
+      , Just con' <- isDataConWorkId_maybe f
+      , con == con'
+      , collectIds args == bndrs
+      = tell (Any True) >> return (mkUnsafeCoerce lhs_ty expr_ty (Var lhs_bndr))
+    go (App e1 e2) = App <$> go e1 <*> go e2
+    go (Lam arg body) = Lam arg <$> go body
+    go (Let bs body) = Let <$> go_bs bs <*> go body
+    go (Case scrt bndr ty alts) = do
+      scrt' <- go scrt
+      alts' <- mapM go_alt alts
+      return (Case scrt' bndr ty alts')
+    go (Cast e c) = Cast <$> go e <*> pure c
+    go (Tick t e) = Tick t <$> go e
+    go e@Type{} = return e
+    go e@Coercion{} = return e
+
+    go_bs :: CoreBind -> Writer Any CoreBind
+    go_bs (NonRec bndr rhs) = NonRec bndr <$> go rhs
+    go_bs (Rec bndrss) = Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> go rhs) bndrss
+
+    go_alt :: CoreAlt -> Writer Any CoreAlt
+    go_alt (alt, bndrs, rhs) = (alt, bndrs,) <$> go rhs
+
     collectIds :: [CoreExpr] -> [Id]
     collectIds exprs = [ v | Var v <- exprs ]
-
-occ_to_use = OneOcc False False False
 
 mkUnsafeCoerce :: Type -> Type -> CoreExpr -> CoreExpr
 mkUnsafeCoerce from to arg = mkApps (Var unsafeCoerceId) [ Type from, Type to, arg ]
