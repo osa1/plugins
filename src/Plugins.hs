@@ -312,6 +312,7 @@ rmrExpr (Case scrt bndr ty alts) = do
     --                  (UnivCo mkUnsafeCo representational b_a33M a1_a33L))_R
     --               :: Maybe1 b_a33M ~R# Maybe1 a1_a33L);
     --     Just1 a2_aKP -> Main.Just1 @ a1_a33L eta_a33N
+    --     }
     --
     -- What kind of transformation could do that? This I have no ideas.
     --
