@@ -63,8 +63,8 @@ implementFuns guts@ModGuts{ mg_binds = binds, mg_rdr_env = rdrEnv } = do
 evalUnlines :: ModGuts -> CoreM ModGuts
 evalUnlines guts@ModGuts{ mg_binds = binds } = do
     liftIO $ putStrLn "Evaluating unlines..."
-    pprTrace "evalUnllines" (pprCoreBindingsWithSize binds) (return ())
-    binds' <- mapM evalUnlines' binds
+    pprTrace "evalUnlines" (pprCoreBindingsWithSize binds) (return ())
+    binds' <- mapM (evalUnlines' emptyVarEnv) binds
     lint (CoreDoPluginPass "Evaluate unlines" evalUnlines) binds'
     return guts{ mg_binds = binds' }
 
@@ -193,18 +193,24 @@ implementFac _ bndr = return bndr
 
 --------------------------------------------------------------------------------
 
-evalUnlines' :: CoreBind -> CoreM CoreBind
-evalUnlines' (NonRec bndr rhs) = NonRec bndr <$> evalUnlinesExpr rhs
-evalUnlines' (Rec bs)          = Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> evalUnlinesExpr rhs) bs
+type InScope = VarEnv CoreExpr
 
-evalUnlinesExpr :: CoreExpr -> CoreM CoreExpr
-evalUnlinesExpr e@Var{} = return e
-evalUnlinesExpr e@Lit{} = return e
+evalUnlines' :: InScope -> CoreBind -> CoreM CoreBind
+evalUnlines' bs (NonRec bndr rhs) = NonRec bndr <$> evalUnlinesExpr bs rhs
+evalUnlines' bs (Rec bndrs)       =
+    Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> evalUnlinesExpr (extendVarEnvList bs bndrs) rhs) bndrs
 
-evalUnlinesExpr e@(App (Var v) arg)
+evalUnlinesExpr :: InScope -> CoreExpr -> CoreM CoreExpr
+evalUnlinesExpr _ e@Var{}
+  = return e
+
+evalUnlinesExpr _ e@Lit{}
+  = return e
+
+evalUnlinesExpr bs e@(App (Var v) arg)
   | occNameString (nameOccName (varName v)) == "unlines"
   = do liftIO (putStrLn "Found a unlines!")
-       case tryCollectList arg of
+       case tryCollectList bs arg of
 
          Just listArgs -> do
            pprTrace "list args:" (ppr listArgs) (return ())
@@ -217,20 +223,34 @@ evalUnlinesExpr e@(App (Var v) arg)
          Nothing -> do
            pprTrace "can't parse list args" empty (return e)
 
-evalUnlinesExpr (App e1 e2)    = App <$> evalUnlinesExpr e1 <*> evalUnlinesExpr e2
-evalUnlinesExpr (Lam arg body) = Lam arg <$> evalUnlinesExpr body
-evalUnlinesExpr (Let bs body)  = Let <$> evalUnlines' bs <*> evalUnlinesExpr body
-evalUnlinesExpr (Case scrt bndr ty alts) = do
-    scrt' <- evalUnlinesExpr scrt
-    alts' <- mapM evalUnlinesAlt alts
-    return $ Case scrt' bndr ty alts'
-evalUnlinesExpr (Cast e c) = Cast <$> evalUnlinesExpr e <*> pure c
-evalUnlinesExpr (Tick t e) = Tick t <$> evalUnlinesExpr e
-evalUnlinesExpr e@Type{} = return e
-evalUnlinesExpr e@Coercion{} = return e
+evalUnlinesExpr bs (App e1 e2)
+  = App <$> evalUnlinesExpr bs e1 <*> evalUnlinesExpr bs e2
 
-evalUnlinesAlt :: CoreAlt -> CoreM CoreAlt
-evalUnlinesAlt = return
+evalUnlinesExpr bs (Lam arg body)
+  = Lam arg <$> evalUnlinesExpr bs body
+
+evalUnlinesExpr bs (Let bnds body)
+  = Let <$> evalUnlines' bs bnds <*> evalUnlinesExpr bs body
+
+evalUnlinesExpr bs (Case scrt bndr ty alts)
+  = do scrt' <- evalUnlinesExpr bs scrt
+       alts' <- mapM (evalUnlinesAlt (extendVarEnv bs bndr scrt)) alts
+       return $ Case scrt' bndr ty alts'
+
+evalUnlinesExpr bs (Cast e c)
+  = Cast <$> evalUnlinesExpr bs e <*> pure c
+
+evalUnlinesExpr bs (Tick t e)
+  = Tick t <$> evalUnlinesExpr bs e
+
+evalUnlinesExpr _ e@Type{}
+  = return e
+
+evalUnlinesExpr _ e@Coercion{}
+  = return e
+
+evalUnlinesAlt :: InScope -> CoreAlt -> CoreM CoreAlt
+evalUnlinesAlt _ = return
 
 --------------------------------------------------------------------------------
 -- | There's a very surprising inefficiency in GHC generated code. Suppose we
@@ -397,17 +417,30 @@ newLocalId str ty = do
     uniq <- getUniqueM
     return (mkSysLocal (mkFastString str) uniq ty)
 
-tryCollectList :: CoreExpr -> Maybe [CoreExpr]
-tryCollectList e@App{}
+tryCollectList :: InScope -> CoreExpr -> Maybe [CoreExpr]
+tryCollectList _ e
+  | pprTrace "tryCollectList" (text "arg:" <+> ppr e) False
+    -- Printing InScope here is useless as it doesn't keep the whole keys
+    -- (it's essentially Map Unique CoreExpr even though it uses Var for lookups)
+  = undefined
+
+tryCollectList bs e@App{}
   | (Var v, [_typeArgument, arg1, arg2]) <- collectArgs e
   , occNameString (nameOccName (varName v)) == ":"
-  = (arg1 :) <$> tryCollectList arg2
+  = (arg1 :) <$> tryCollectList bs arg2
 
   | (Var v, [_typeArgument]) <- collectArgs e
   , occNameString (nameOccName (varName v)) == "[]"
   = Just []
 
-tryCollectList e = Nothing
+tryCollectList bs (Var v)
+  | CoreUnfolding{ uf_tmpl = tmpl } <- idUnfolding v
+  = pprTrace "tryCollectList" (text "found template:" <+> ppr tmpl) $ tryCollectList bs tmpl
+
+  | Just e <- lookupVarEnv bs v
+  = pprTrace "found in env" (ppr e) $ tryCollectList bs e
+
+tryCollectList _ _ = Nothing
 
 tryExtractString :: CoreExpr -> Maybe BS.ByteString
 tryExtractString (App (Var v) (Lit (MachStr bs)))
