@@ -383,7 +383,11 @@ substCoerceExpr lhs_ty lhs_bndr con bndrs expr_ty expr = go expr
     collectIds exprs = [ v | Var v <- exprs ]
 
 mkUnsafeCoerce :: Type -> Type -> CoreExpr -> CoreExpr
-mkUnsafeCoerce from to arg = mkApps (Var unsafeCoerceId) [ Type from, Type to, arg ]
+mkUnsafeCoerce from to arg =
+    mkApps (Var unsafeCoerceId)
+      [ Type (getLevity "mkUnsafeCoerce" from), Type (getLevity "mkUnsafeCoerce" to)
+      , Type from, Type to
+      , arg ]
 
 --------------------------------------------------------------------------------
 -- * Utils
