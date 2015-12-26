@@ -429,6 +429,14 @@ tryCollectList bs e@App{}
   , occNameString (nameOccName (varName v)) == ":"
   = (arg1 :) <$> tryCollectList bs arg2
 
+  | e@(Var v, [_typeArgument, lambda_argument]) <- collectArgs e
+  , occNameString (nameOccName (varName v)) == "build"
+  = pprTrace "found a build" (ppr e) $
+    case lambda_argument of
+      Lam _typeArgument' (Lam cons (Lam nil body)) ->
+        tryCollectList_build (varName cons) (varName nil) body
+      _ -> Nothing
+
   | (Var v, [_typeArgument]) <- collectArgs e
   , occNameString (nameOccName (varName v)) == "[]"
   = Just []
@@ -441,6 +449,31 @@ tryCollectList bs (Var v)
   = pprTrace "found in env" (ppr e) $ tryCollectList bs e
 
 tryCollectList _ _ = Nothing
+
+tryCollectList_build :: Name -> Name -> CoreExpr -> Maybe [CoreExpr]
+tryCollectList_build cons nil (App (App (Var v) arg1) arg2)
+  | occName (varName v) == occName cons
+  = (arg1 :) <$> tryCollectList_build cons nil arg2
+
+tryCollectList_build _cons nil (Var v)
+  | occName (varName v) == occName nil
+    -- I don't think nil argument is used this way though...
+  = Just []
+
+tryCollectList_build cons nil
+    (App (App (App (App (App (Var foldr_v) (Type _))
+                        (Type _))
+                   (Var cons_arg))
+              (Var nil_arg))
+         (App (Var nil_list) (Type _)))
+  | occNameString (occName (varName foldr_v)) == "foldr"
+  , varName cons_arg == cons
+  , varName nil_arg == nil
+  , occNameString (occName (varName nil_list)) == "[]"
+  = Just []
+
+tryCollectList_build _ _ _
+  = Nothing
 
 tryExtractString :: CoreExpr -> Maybe BS.ByteString
 tryExtractString (App (Var v) (Lit (MachStr bs)))
