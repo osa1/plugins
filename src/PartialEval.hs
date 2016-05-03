@@ -1,5 +1,5 @@
 {-# LANGUAGE FlexibleContexts, GeneralizedNewtypeDeriving, LambdaCase,
-             TupleSections #-}
+             MultiWayIf, TupleSections #-}
 
 module PartialEval where
 
@@ -10,7 +10,7 @@ import           SimplCore
 import           TrieMap
 
 import           Data.Bifunctor              (second)
-import           Data.List                   (find)
+import           Data.List                   (find, partition)
 
 import           Control.Monad.Reader
 import           Control.Monad.State.Strict
@@ -18,8 +18,11 @@ import           Control.Monad.Writer.Strict
 
 peval :: ModGuts -> CoreM ModGuts
 peval guts@ModGuts{ mg_binds = binds } = do
-    (binds', _) <- peval_pgm binds -- FIXME
-    return guts{ mg_binds = binds' }
+    (binds', new_toplevels) <- peval_pgm binds
+    pprTrace "peval" (text "New toplevels:" $$ ppr (rev new_toplevels) $$
+                      text "Original binds:" $$ ppr binds $$
+                      text "Modified binds:" $$ ppr binds') (return ())
+    return guts{ mg_binds = rev new_toplevels ++ binds' }
 
 -- | A specialized function value in the map of function specializations.
 data SpecFn = SpecFn
@@ -39,8 +42,12 @@ newtype RevList a = RevList [a]
 rev :: RevList a -> [a]
 rev (RevList lst) = reverse lst
 
-registerTopFn :: MonadWriter (RevList CoreBind) w => CoreBind -> w ()
-registerTopFn bind = tell (RevList [bind])
+registerTopFn :: MonadWriter (RevList CoreBind) w => Id -> CoreBind -> w ()
+registerTopFn fname bind = tell (RevList [setBindName fname bind])
+
+setBindName :: Id -> CoreBind -> CoreBind
+setBindName v (NonRec _ rhs) = NonRec v rhs
+setBindName v (Rec bs) = Rec (map (\(_, rhs) -> (v, rhs)) bs)
 
 instance Monoid (RevList a) where
     mempty = RevList []
@@ -79,6 +86,7 @@ peval_top_bind (Rec binds)       = Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> pev
 peval_expr :: CoreExpr -> PE CoreExpr
 peval_expr app@App{}
   = do let (fn0, as0) = collectArgs app
+       -- pprTrace "peval_expr" (text "Considering application:" <+> ppr app) (return ())
        fn <- peval_expr fn0
        as <- mapM peval_expr as0
 
@@ -89,35 +97,53 @@ peval_expr app@App{}
              Nothing -> return (mkApps fn as)
              Just (fn_args, rhs) -> do
                let
-                 arg_binds, static_arg_binds, dynamic_arg_binds :: [(Id, CoreExpr)]
+                 arg_binds :: [(Id, CoreExpr)]
                  arg_binds = zipErr fn_args as
-                 (static_arg_binds, dynamic_arg_binds) = span (isValue . snd) arg_binds
 
-               if null dynamic_arg_binds
-                 then do
-                   let ret = mkApps fn as
-                   pprTrace "peval_expr"
-                     (text "Found app with static args:" $$ ppr ret)
-                     (return ret)
+               -- pprTrace "arg_binds" (ppr arg_binds) (return ())
 
-                 else do
-                   -- Do we have a specialization for these static args?
-                   specs_map <- get
-                   case lookupVarEnv specs_map v of
-                     Nothing -> do
-                       (spec_fn_id, spec_fn_bind) <- specialize v (fn_args, rhs) as static_arg_binds
-                       return (mkApps (Var spec_fn_id) (map snd dynamic_arg_binds))
+               let
+                 static_arg_binds, dynamic_arg_binds :: [(Id, CoreExpr)]
+                 (static_arg_binds, dynamic_arg_binds) =
+                   partition (isValue emptyVarSet . snd) arg_binds
 
-                     Just specs -> do
-                       let args_map = mkVarEnv (map (second deBruijnize) static_arg_binds)
-                       case find (\SpecFn { _args = spec_args } -> spec_args == args_map) specs of
-                         Nothing -> do
-                           (spec_fn_id, spec_fn_bind)
-                             <- specialize v (fn_args, rhs) as static_arg_binds
-                           return (mkApps (Var spec_fn_id) (map snd dynamic_arg_binds))
+               -- pprTrace "static_arg_binds" (ppr static_arg_binds) (return ())
+               -- pprTrace "dynamic_arg_binds" (ppr dynamic_arg_binds) (return ())
 
-                         Just (SpecFn { _spec = spec }) ->
-                           return (mkApps (Var spec) (map snd dynamic_arg_binds))
+
+               if | null dynamic_arg_binds -> do
+                    let ret = mkApps fn as
+                    pprTrace "peval_expr"
+                      (text "Found app with static args:" $$ ppr ret)
+                      (return ret)
+
+                  | null static_arg_binds -> do
+                    pprTrace "peval_expr"
+                      (text "All args dynamic:" <+> ppr dynamic_arg_binds) (return ())
+                    return (mkApps fn as)
+
+                  | otherwise -> do
+                    -- Do we have a specialization for these static args?
+                    pprTrace "peval_expr"
+                      (text "Looking for a specialization of function " <+> ppr v $$
+                       text "Static args:" <+> ppr static_arg_binds $$
+                       text "Dynamic args:" <+> ppr dynamic_arg_binds) (return ())
+                    specs_map <- get
+                    case lookupVarEnv specs_map v of
+                      Nothing -> do
+                        (spec_fn_id, spec_fn_bind) <- specialize v (fn_args, rhs) as static_arg_binds
+                        return (mkApps (Var spec_fn_id) (map snd dynamic_arg_binds))
+
+                      Just specs -> do
+                        let args_map = mkVarEnv (map (second deBruijnize) static_arg_binds)
+                        case find (\SpecFn { _args = spec_args } -> spec_args == args_map) specs of
+                          Nothing -> do
+                            (spec_fn_id, spec_fn_bind)
+                              <- specialize v (fn_args, rhs) as static_arg_binds
+                            return (mkApps (Var spec_fn_id) (map snd dynamic_arg_binds))
+
+                          Just (SpecFn { _spec = spec }) ->
+                            return (mkApps (Var spec) (map snd dynamic_arg_binds))
 
          _ -> return (mkApps fn as)
 
@@ -161,7 +187,8 @@ specialize orig_fn_id (fn_args, rhs) all_args static_arg_binds = do
     let
       orig_fn_ty = varType orig_fn_id
       new_fn_ty  = dropStaticArgTys all_args orig_fn_ty
-    spec_fn_id <- mkSysLocalM (mkFastString (getOccString (idName orig_fn_id))) new_fn_ty
+
+    spec_fn_id <- newLocalId (getOccString (idName orig_fn_id)) new_fn_ty
 
     modify (\specs_map ->
             extendVarEnv specs_map orig_fn_id
@@ -173,14 +200,46 @@ specialize orig_fn_id (fn_args, rhs) all_args static_arg_binds = do
       liftIO (simplifyCoreBind dflags (substStaticArgs (mkVarEnv static_arg_binds) rhs))
     spec_fun_rhs' <- peval_top_bind spec_fun_rhs
 
-    registerTopFn spec_fun_rhs'
+    registerTopFn spec_fn_id spec_fun_rhs'
 
     return (spec_fn_id, spec_fun_rhs')
 
+newLocalId :: String -> Type -> PE Id
+newLocalId str ty = do
+    uniq <- getUniqueM
+    return (mkSysLocal (mkFastString str) uniq ty)
+
 --------------------------------------------------------------------------------
 
-isValue :: CoreExpr -> Bool
-isValue = undefined
+-- Values are either literals, closed lambdas, or saturated DataCon applications
+-- (where args are values)
+
+isValue :: VarSet -> CoreExpr -> Bool
+isValue _ Lit{} = True
+
+isValue args e@App{}
+  = let (fn0, as0) = collectArgs e in
+    case fn0 of
+      Var v
+        | isDataConWorkId v -> all (isValue args) as0
+        | otherwise -> False
+      _ -> False
+
+isValue args (Var v) = v `elemVarSet` args
+
+isValue args (Lam arg body) = isValue (extendVarSet args arg) body
+
+isValue _ Let{} = False
+
+isValue _ Case{} = False
+
+isValue args (Cast e _) = isValue args e
+
+isValue args (Tick _ e) = isValue args e
+
+isValue _ Type{} = True
+
+isValue _ Coercion{} = False -- TODO: Not sure about that
 
 --------------------------------------------------------------------------------
 
@@ -195,8 +254,8 @@ dropStaticArgTys args ty =
   where
     go [] = []
     go ((arg, arg_ty) : rest)
-      | isValue arg = go rest
-      | otherwise   = arg_ty : go rest
+      | isValue emptyVarSet arg = go rest
+      | otherwise = arg_ty : go rest
 
 --------------------------------------------------------------------------------
 
