@@ -16,11 +16,12 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:     Plugins
+  other-modules:       PartialEval
 
   build-depends:
     base >= 4.8 && < 4.10,
     bytestring,
-    ghc  >= 7.10 && < 8,
+    ghc  == 8.1,
     mtl
     -- CoreDump >= 0.1.2.0
 

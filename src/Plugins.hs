@@ -21,6 +21,8 @@ import           Control.Monad.Writer.Strict hiding (pass)
 import qualified Data.ByteString             as BS
 import qualified Data.ByteString.Char8       as BSC
 
+import           PartialEval
+
 --------------------------------------------------------------------------------
 -- Some problems with plugins:
 --
@@ -44,6 +46,8 @@ plugin = defaultPlugin{installCoreToDos = installPlugin}
              -- (I think only happens when `removeRebuilding` is used)
              -- : []
              : todos
+             ++ [CoreDoPluginPass "Remove rebuilding" removeRebuilding
+                ,CoreDoPluginPass "Partial evaluation" peval]
              )
 
 --------------------------------------------------------------------------------
@@ -71,7 +75,7 @@ evalUnlines guts@ModGuts{ mg_binds = binds } = do
 removeRebuilding :: ModGuts -> CoreM ModGuts
 removeRebuilding guts@ModGuts{ mg_binds = binds } = do
     liftIO $ putStrLn "Trying to remove rebuilding..."
-    -- pprTrace "removeRebuilding" (pprCoreBindingsWithSize binds) (return ())
+    pprTrace "removeRebuilding" (pprCoreBindingsWithSize binds) (return ())
     binds' <- mapM rmrBinds binds
     lint (CoreDoPluginPass "Remove rebuilding" removeRebuilding) binds'
     return guts{ mg_binds = binds' }
@@ -288,9 +292,9 @@ evalUnlinesAlt _ = return
 --
 rmrBinds :: CoreBind -> CoreM CoreBind
 rmrBinds (NonRec bndr rhs) =
-    NonRec bndr <$> rmrExpr rhs
+    NonRec bndr <$> pprTrace "rmrBind:" (ppr bndr) (rmrExpr rhs)
 rmrBinds (Rec bndrs)       =
-    Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> rmrExpr rhs) bndrs
+    Rec <$> mapM (\(bndr, rhs) -> (bndr,) <$> pprTrace "rmrBind:" (ppr bndr) (rmrExpr rhs)) bndrs
 
 rmrExpr :: CoreExpr -> CoreM CoreExpr
 rmrExpr e@Var{} = return e
@@ -341,9 +345,9 @@ rmrExpr e@(Case scrt bndr ty alts) = do
     --
     -- To be explored later.
     --
-    when updateOccInfo $
-      pprTrace "rmrExpr" (text "before:" <+> ppr e $$
-                          text "after:" <+> ppr ret) (return ())
+    -- when updateOccInfo $
+    --   pprTrace "rmrExpr" (text "before:" <+> ppr e $$
+    --                       text "after:" <+> ppr ret) (return ())
 
     return ret
 
@@ -379,7 +383,10 @@ substCoerceExpr lhs_ty lhs_bndr con bndrs expr_ty expr = go expr
       , Just con' <- isDataConWorkId_maybe f
       , con == con'
       , collectIds args == bndrs
-      = tell (Any True) >> return (mkUnsafeCoerce lhs_ty expr_ty (Var lhs_bndr))
+      = do tell (Any True)
+           if eqType lhs_ty expr_ty
+             then return (Var lhs_bndr)
+             else return (mkUnsafeCoerce lhs_ty expr_ty (Var lhs_bndr))
     go (App e1 e2) = App <$> go e1 <*> go e2
     go (Lam arg body) = Lam arg <$> go body
     go (Let bs body) = Let <$> go_bs bs <*> go body
